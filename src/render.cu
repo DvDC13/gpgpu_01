@@ -1,5 +1,4 @@
 #include "render.hpp"
-//#include "heat_lut.hpp"
 #include <spdlog/spdlog.h>
 #include <cassert>
 #include <iostream>
@@ -121,20 +120,6 @@ __global__ void compute_iter(int* buffer, int width, int height, int max_iter)
   buffer[gid] = n_iterations;
 }
 
-/*__global__ void compute_LUT(const uint32_t* buffer, int width, int height, size_t pitch, int max_iter, uchar4* LUT)
-{
-  int x = blockDim.x * blockIdx.x + threadIdx.x;
-  int y = blockDim.y * blockIdx.y + threadIdx.y;
-
-  if (x >= width || y >= height)
-    return;
-
-  int gid = y * width + x;
-
-  uchar4 color = heat_lut((double)buffer[gid] / (double)max_iter);
-  LUT[gid] = color;
-}*/
-
 __global__ void apply_LUT(char* buffer,int* iter_buffer, int width, int height, size_t pitch, int max_iter, const rgba8_t* LUT)
 {
   int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -174,6 +159,7 @@ void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int 
 
   compute_iter<<<dimGrid, dimBlock>>>(dev_iterBuffer, width, height, n_iterations);
   cudaDeviceSynchronize();
+  if (cudaPeekAtLastError() != cudaSuccess) abortError("compute_iter failed");
   
   err = cudaMemcpy(iterBuffer, dev_iterBuffer, ImageSize * sizeof(int), cudaMemcpyDeviceToHost);
   if (err != cudaSuccess) abortError("cudaMemcpy failed");
@@ -212,6 +198,7 @@ void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int 
 
   apply_LUT<<<dimGrid, dimBlock>>>(buff, dev_iterBuffer, width, height, stride, n_iterations, devLUT);
   cudaDeviceSynchronize();
+  if (cudaPeekAtLastError() != cudaSuccess) abortError("apply_LUT failed");
 
   err = cudaMemcpy(hostBuffer, buff, ImageSize * sizeof(rgba8_t), cudaMemcpyDeviceToHost);
   if (err != cudaSuccess) abortError("cudaMemcpy failed");
