@@ -182,8 +182,9 @@ void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int 
   double tmp = 0;
   for (int i = 0; i < n_iterations; i++)
   {
-    tmp += histogram[i] / sum;
-    hue[i] = heat_lut(tmp);
+    tmp += histogram[i];
+    double val = tmp / sum;
+    hue[i] = heat_lut(val);
   }
 
   rgba8_t *devLUT;
