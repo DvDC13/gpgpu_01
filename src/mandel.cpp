@@ -51,7 +51,6 @@ void write_png(const std::byte* buffer,
   fclose(fp);
 }
 
-
 // Usage: ./mandel
 int main(int argc, char** argv)
 {

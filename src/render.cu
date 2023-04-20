@@ -120,7 +120,25 @@ __global__ void compute_iter(int* buffer, int width, int height, int max_iter)
   buffer[gid] = n_iterations;
 }
 
-__global__ void apply_LUT(char* buffer,int* iter_buffer, int width, int height, size_t pitch, int max_iter, const rgba8_t* LUT)
+__global__ void histogramKernel(int* histogram, int* data, int arraySize, int max_iter)
+{
+	int gid = blockIdx.x * blockDim.x + threadIdx.x;
+
+	extern __shared__ int sharedHistogram[];
+
+	if (threadIdx.x < max_iter) sharedHistogram[threadIdx.x] = 0;
+
+	__syncthreads();
+
+	for (int i = gid; i < arraySize; i += blockDim.x * gridDim.x)
+		atomicAdd(&sharedHistogram[data[i]], 1);
+
+	__syncthreads();
+	
+	if (threadIdx.x < max_iter) atomicAdd(&histogram[threadIdx.x], sharedHistogram[threadIdx.x]);
+}
+
+__global__ void apply_LUT(char* buffer, int* iter_buffer, int width, int height, size_t pitch, int max_iter, const rgba8_t* LUT)
 {
   int x = blockDim.x * blockIdx.x + threadIdx.x;
   int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -141,10 +159,6 @@ void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int 
 {
   cudaError_t err = cudaSuccess;
 
-  int HistogramByteSize = n_iterations * sizeof(int);
-  int *histogram = new int[n_iterations];
-  memset(histogram, 0, HistogramByteSize);
-
   int ImageSize = width * height;
 
   dim3 dimBlock(32, 32);
@@ -160,14 +174,22 @@ void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int 
   compute_iter<<<dimGrid, dimBlock>>>(dev_iterBuffer, width, height, n_iterations);
   cudaDeviceSynchronize();
   if (cudaPeekAtLastError() != cudaSuccess) abortError("compute_iter failed");
-  
-  err = cudaMemcpy(iterBuffer, dev_iterBuffer, ImageSize * sizeof(int), cudaMemcpyDeviceToHost);
-  if (err != cudaSuccess) abortError("cudaMemcpy failed");
 
-  for (int i = 0; i < ImageSize; i++)
-  {
-    histogram[iterBuffer[i]]++;
-  }
+  int HistogramByteSize = (n_iterations + 1) * sizeof(int);
+  int *d_histogram;
+  err = cudaMalloc((void **)&d_histogram, HistogramByteSize);
+  if (err != cudaSuccess) abortError("cudaMalloc failed");
+
+  dim3 histogramBlock(512);
+  dim3 histogramGrid((ImageSize + histogramBlock.x - 1) / histogramBlock.x);
+  int sharedMemSize = HistogramByteSize;
+
+  histogramKernel<<<histogramGrid, histogramBlock, sharedMemSize>>>(d_histogram, dev_iterBuffer, ImageSize, n_iterations + 1);
+  cudaDeviceSynchronize();
+
+  int *hostHistogram = new int[n_iterations + 1];
+  err = cudaMemcpy(hostHistogram, d_histogram, HistogramByteSize, cudaMemcpyDeviceToHost);
+  if (err != cudaSuccess) abortError("cudaMemcpy failed");
 
   rgba8_t *hue = new rgba8_t[n_iterations + 1];
   for (int i = 0; i < n_iterations + 1; i++)
@@ -177,12 +199,12 @@ void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int 
 
   double sum = 0;
   for (int i = 0; i < n_iterations; i++)
-    sum += histogram[i];
+    sum += hostHistogram[i];
 
   double tmp = 0;
   for (int i = 0; i < n_iterations; i++)
   {
-    tmp += histogram[i];
+    tmp += hostHistogram[i];
     double val = tmp / sum;
     hue[i] = heat_lut(val);
   }
@@ -211,9 +233,8 @@ void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int 
   err = cudaFree(buff);
   if (err != cudaSuccess) abortError("cudaFree failed");
 
-  delete[] iterBuffer;
   delete[] hue;
-  delete[] histogram;
+  delete[] hostHistogram;
 }
 
 /*void render(char* hostBuffer, int width, int height, std::ptrdiff_t stride, int n_iterations)
